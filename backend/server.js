@@ -6,60 +6,85 @@ const app = express();
 
 const PORT = process.env.PORT || 10000;
 
+// ================================
+// MIDDLEWARE
+// ================================
+
 app.use(
   cors({
-    origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    origin: true,
+    credentials: true,
   })
 );
 
 app.use(express.json({ limit: "10mb" }));
 
-// ─────────────────────────────────────
-// HEALTH CHECK
-// ─────────────────────────────────────
+// ================================
+// TEMPORARY IN-MEMORY STORAGE
+// ================================
+
+const conversations = new Map();
+
+// ================================
+// ROOT
+// ================================
 
 app.get("/", (req, res) => {
   res.json({
     success: true,
-    app: "Rairolaxy AI",
-    status: "online",
-    message: "Rairolaxy AI backend is running",
+    name: "Rairolaxy AI",
+    message: "Rairolaxy AI backend is running.",
+    version: "1.0.0",
   });
 });
 
-app.get("/api/health", (req, res) => {
+// ================================
+// HEALTH CHECK
+// ================================
+
+app.get("/health", (req, res) => {
   res.json({
     success: true,
     status: "healthy",
     service: "rairolaxy-ai-backend",
-    timestamp: new Date().toISOString(),
+    time: new Date().toISOString(),
   });
 });
 
-// ─────────────────────────────────────
-// TEMPORARY IN-MEMORY DATA
-// Database baad mein connect karenge
-// ─────────────────────────────────────
+// ================================
+// API STATUS
+// ================================
 
-const conversations = new Map();
+app.get("/api/status", (req, res) => {
+  res.json({
+    success: true,
+    backend: true,
+    aiProviderConfigured: Boolean(process.env.AI_API_KEY),
+    databaseConfigured: Boolean(process.env.DATABASE_URL),
+    message: "Rairolaxy AI backend is connected.",
+  });
+});
 
-// ─────────────────────────────────────
+// ================================
 // CREATE CONVERSATION
-// ─────────────────────────────────────
+// ================================
 
 app.post("/api/conversations", (req, res) => {
-  const { title = "New Chat" } = req.body;
+  const title =
+    typeof req.body?.title === "string" && req.body.title.trim()
+      ? req.body.title.trim()
+      : "New Chat";
 
   const id = `conv_${Date.now()}`;
 
   const conversation = {
     id,
     title,
+    pinned: false,
+    archived: false,
+    messages: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-    messages: [],
   };
 
   conversations.set(id, conversation);
@@ -70,9 +95,9 @@ app.post("/api/conversations", (req, res) => {
   });
 });
 
-// ─────────────────────────────────────
-// GET CONVERSATIONS
-// ─────────────────────────────────────
+// ================================
+// GET ALL CONVERSATIONS
+// ================================
 
 app.get("/api/conversations", (req, res) => {
   res.json({
@@ -83,9 +108,9 @@ app.get("/api/conversations", (req, res) => {
   });
 });
 
-// ─────────────────────────────────────
+// ================================
 // GET ONE CONVERSATION
-// ─────────────────────────────────────
+// ================================
 
 app.get("/api/conversations/:id", (req, res) => {
   const conversation = conversations.get(req.params.id);
@@ -103,47 +128,134 @@ app.get("/api/conversations/:id", (req, res) => {
   });
 });
 
-// ─────────────────────────────────────
+// ================================
 // SEND MESSAGE
-// ─────────────────────────────────────
+// ================================
 
 app.post("/api/conversations/:id/messages", async (req, res) => {
-  const { message } = req.body;
+  try {
+    const message = req.body?.message;
 
-  if (!message || typeof message !== "string") {
-    return res.status(400).json({
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "Message is required",
+      });
+    }
+
+    const conversation = conversations.get(req.params.id);
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        error: "Conversation not found",
+      });
+    }
+
+    // ================================
+    // USER MESSAGE
+    // ================================
+
+    const userMessage = {
+      id: `msg_${Date.now()}`,
+      role: "user",
+      content: message.trim(),
+      createdAt: new Date().toISOString(),
+    };
+
+    conversation.messages.push(userMessage);
+
+    // ================================
+    // AI PROVIDER CONNECTION
+    // ================================
+    // Actual AI API can be connected here
+    // using AI_API_KEY and AI_API_URL.
+    // ================================
+
+    const assistantMessage = {
+      id: `msg_${Date.now()}_ai`,
+      role: "assistant",
+      content:
+        "Rairolaxy AI backend connected hai. AI provider connection abhi configure nahi hai.",
+      createdAt: new Date().toISOString(),
+    };
+
+    conversation.messages.push(assistantMessage);
+
+    conversation.updatedAt = new Date().toISOString();
+
+    res.json({
+      success: true,
+      userMessage,
+      assistantMessage,
+      conversation,
+    });
+  } catch (error) {
+    console.error("Message error:", error);
+
+    res.status(500).json({
       success: false,
-      error: "Message is required",
+      error: "Failed to process message",
     });
   }
+});
 
-  const conversation = conversations.get(req.params.id);
+// ================================
+// DELETE CONVERSATION
+// ================================
 
-  if (!conversation) {
+app.delete("/api/conversations/:id", (req, res) => {
+  const exists = conversations.has(req.params.id);
+
+  if (!exists) {
     return res.status(404).json({
       success: false,
       error: "Conversation not found",
     });
   }
 
-  const userMessage = {
-    id: `msg_${Date.now()}`,
-    role: "user",
-    content: message,
-    createdAt: new Date().toISOString(),
-  };
+  conversations.delete(req.params.id);
 
-  conversation.messages.push(userMessage);
+  res.json({
+    success: true,
+    message: "Conversation deleted",
+  });
+});
 
-  /*
-   * AI PROVIDER CONNECTION
-   *
-   * Yahan actual AI API connect hogi.
-   * API key .env mein rakhi jayegi.
-   */
+// ================================
+// 404 HANDLER
+// ================================
 
-  const assistantMessage = {
-    id: `msg_${Date.now()}_ai`,
-    role: "assistant",
-    content:
-      "Rairolaxy AI backend connected hai. AI provider connection
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    error: "API route not found",
+    path: req.originalUrl,
+  });
+});
+
+// ================================
+// ERROR HANDLER
+// ================================
+
+app.use((error, req, res, next) => {
+  console.error("Server error:", error);
+
+  res.status(500).json({
+    success: false,
+    error: "Internal server error",
+  });
+});
+
+// ================================
+// START SERVER
+// ================================
+
+app.listen(PORT, () => {
+  console.log("====================================");
+  console.log("Rairolaxy AI Backend Started");
+  console.log(`Port: ${PORT}`);
+  console.log(`AI API configured: ${Boolean(process.env.AI_API_KEY)}`);
+  console.log(`Database configured: ${Boolean(process.env.DATABASE_URL)}`);
+  console.log("====================================");
+});
