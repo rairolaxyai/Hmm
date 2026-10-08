@@ -1,0 +1,15 @@
+# Server
+PORT=10000
+
+# AI Provider
+AI_API_KEY=
+AI_API_URL=
+
+# Database
+DATABASE_URL=
+
+# Authentication
+JWT_SECRET=
+
+# Frontend
+FRONTEND_URL=
