@@ -1,14 +1,21 @@
+require("dotenv").config();
+
 const express = require("express");
 const cors = require("cors");
-require("dotenv").config();
 
 const app = express();
 
 const PORT = process.env.PORT || 10000;
+const AI_API_KEY = process.env.NVIDIA_API_KEY || process.env.AI_API_KEY;
+const AI_API_URL =
+  process.env.NVIDIA_API_URL ||
+  process.env.AI_API_URL ||
+  "https://integrate.api.nvidia.com/v1/chat/completions";
 
-// ================================
-// MIDDLEWARE
-// ================================
+const AI_MODEL =
+  process.env.NVIDIA_MODEL ||
+  process.env.AI_MODEL ||
+  "nvidia/nemotron-3-super-120b-a12b";
 
 app.use(
   cors({
@@ -19,69 +26,45 @@ app.use(
 
 app.use(express.json({ limit: "10mb" }));
 
-// ================================
-// TEMPORARY IN-MEMORY STORAGE
-// ================================
-
+// In-memory conversations
 const conversations = new Map();
-
-// ================================
-// ROOT
-// ================================
 
 app.get("/", (req, res) => {
   res.json({
     success: true,
-    name: "Rairolaxy AI",
-    message: "Rairolaxy AI backend is running.",
-    version: "1.0.0",
+    name: "Rairolaxy AI Backend",
+    status: "running",
+    provider: "NVIDIA",
+    model: AI_MODEL,
   });
 });
-
-// ================================
-// HEALTH CHECK
-// ================================
 
 app.get("/health", (req, res) => {
   res.json({
     success: true,
     status: "healthy",
-    service: "rairolaxy-ai-backend",
-    time: new Date().toISOString(),
+    aiConfigured: Boolean(AI_API_KEY),
   });
 });
-
-// ================================
-// API STATUS
-// ================================
 
 app.get("/api/status", (req, res) => {
   res.json({
     success: true,
-    backend: true,
-    aiProviderConfigured: Boolean(process.env.AI_API_KEY),
-    databaseConfigured: Boolean(process.env.DATABASE_URL),
-    message: "Rairolaxy AI backend is connected.",
+    backend: "connected",
+    aiProvider: "NVIDIA",
+    aiConfigured: Boolean(AI_API_KEY),
+    model: AI_MODEL,
   });
 });
 
-// ================================
-// CREATE CONVERSATION
-// ================================
-
+// Create conversation
 app.post("/api/conversations", (req, res) => {
-  const title =
-    typeof req.body?.title === "string" && req.body.title.trim()
-      ? req.body.title.trim()
-      : "New Chat";
-
-  const id = `conv_${Date.now()}`;
+  const id =
+    req.body?.id ||
+    `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
   const conversation = {
     id,
-    title,
-    pinned: false,
-    archived: false,
     messages: [],
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -89,29 +72,13 @@ app.post("/api/conversations", (req, res) => {
 
   conversations.set(id, conversation);
 
-  res.status(201).json({
+  res.json({
     success: true,
     conversation,
   });
 });
 
-// ================================
-// GET ALL CONVERSATIONS
-// ================================
-
-app.get("/api/conversations", (req, res) => {
-  res.json({
-    success: true,
-    conversations: Array.from(conversations.values()).map(
-      ({ messages, ...conversation }) => conversation
-    ),
-  });
-});
-
-// ================================
-// GET ONE CONVERSATION
-// ================================
-
+// Get conversation
 app.get("/api/conversations/:id", (req, res) => {
   const conversation = conversations.get(req.params.id);
 
@@ -128,134 +95,145 @@ app.get("/api/conversations/:id", (req, res) => {
   });
 });
 
-// ================================
-// SEND MESSAGE
-// ================================
-
+// Send message + NVIDIA AI response
 app.post("/api/conversations/:id/messages", async (req, res) => {
   try {
-    const message = req.body?.message;
+    const conversationId = req.params.id;
+    const userMessage = String(req.body?.message || "").trim();
 
-    if (!message || typeof message !== "string") {
+    if (!userMessage) {
       return res.status(400).json({
         success: false,
         error: "Message is required",
       });
     }
 
-    const conversation = conversations.get(req.params.id);
-
-    if (!conversation) {
-      return res.status(404).json({
+    if (!AI_API_KEY) {
+      return res.status(500).json({
         success: false,
-        error: "Conversation not found",
+        error: "NVIDIA_API_KEY is not configured on the server.",
       });
     }
 
-    // ================================
-    // USER MESSAGE
-    // ================================
+    let conversation = conversations.get(conversationId);
 
-    const userMessage = {
-      id: `msg_${Date.now()}`,
+    if (!conversation) {
+      conversation = {
+        id: conversationId,
+        messages: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      conversations.set(conversationId, conversation);
+    }
+
+    // Save user message
+    conversation.messages.push({
       role: "user",
-      content: message.trim(),
+      content: userMessage,
       createdAt: new Date().toISOString(),
-    };
+    });
 
-    conversation.messages.push(userMessage);
+    // Send recent conversation history to NVIDIA
+    const history = conversation.messages
+      .slice(-20)
+      .map((message) => ({
+        role: message.role,
+        content: message.content,
+      }));
 
-    // ================================
-    // AI PROVIDER CONNECTION
-    // ================================
-    // Actual AI API can be connected here
-    // using AI_API_KEY and AI_API_URL.
-    // ================================
+    const response = await fetch(AI_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${AI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are Rairolaxy AI, a helpful, intelligent and conversational AI assistant. Give accurate, clear and useful answers. Respond in the language used by the user.",
+          },
+          ...history,
+        ],
+        temperature: 0.7,
+        max_tokens: 2048,
+        stream: false,
+      }),
+    });
 
-    const assistantMessage = {
-      id: `msg_${Date.now()}_ai`,
+    const rawText = await response.text();
+
+    let data;
+
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      data = null;
+    }
+
+    if (!response.ok) {
+      console.error("NVIDIA API error:", response.status, rawText);
+
+      return res.status(502).json({
+        success: false,
+        error: "NVIDIA AI request failed.",
+        providerStatus: response.status,
+        details: data?.error?.message || rawText.slice(0, 500),
+      });
+    }
+
+    const assistantMessage =
+      data?.choices?.[0]?.message?.content ||
+      data?.choices?.[0]?.text ||
+      "";
+
+    if (!assistantMessage) {
+      console.error("Unexpected NVIDIA response:", data);
+
+      return res.status(502).json({
+        success: false,
+        error: "NVIDIA returned an empty AI response.",
+      });
+    }
+
+    // Save AI response
+    conversation.messages.push({
       role: "assistant",
-      content:
-        "Rairolaxy AI backend connected hai. AI provider connection abhi configure nahi hai.",
+      content: assistantMessage,
       createdAt: new Date().toISOString(),
-    };
-
-    conversation.messages.push(assistantMessage);
+    });
 
     conversation.updatedAt = new Date().toISOString();
 
     res.json({
       success: true,
-      userMessage,
-      assistantMessage,
-      conversation,
+      conversationId,
+      message: {
+        role: "assistant",
+        content: assistantMessage,
+        createdAt: new Date().toISOString(),
+      },
+      usage: data?.usage || null,
+      model: data?.model || AI_MODEL,
     });
   } catch (error) {
-    console.error("Message error:", error);
+    console.error("Chat error:", error);
 
     res.status(500).json({
       success: false,
-      error: "Failed to process message",
+      error: "AI request failed.",
+      details: error.message,
     });
   }
 });
 
-// ================================
-// DELETE CONVERSATION
-// ================================
-
-app.delete("/api/conversations/:id", (req, res) => {
-  const exists = conversations.has(req.params.id);
-
-  if (!exists) {
-    return res.status(404).json({
-      success: false,
-      error: "Conversation not found",
-    });
-  }
-
-  conversations.delete(req.params.id);
-
-  res.json({
-    success: true,
-    message: "Conversation deleted",
-  });
-});
-
-// ================================
-// 404 HANDLER
-// ================================
-
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    error: "API route not found",
-    path: req.originalUrl,
-  });
-});
-
-// ================================
-// ERROR HANDLER
-// ================================
-
-app.use((error, req, res, next) => {
-  console.error("Server error:", error);
-
-  res.status(500).json({
-    success: false,
-    error: "Internal server error",
-  });
-});
-
-// ================================
-// START SERVER
-// ================================
-
-app.listen(PORT, () => {
-  console.log("====================================");
-  console.log("Rairolaxy AI Backend Started");
-  console.log(`Port: ${PORT}`);
-  console.log(`AI API configured: ${Boolean(process.env.AI_API_KEY)}`);
-  console.log(`Database configured: ${Boolean(process.env.DATABASE_URL)}`);
-  console.log("====================================");
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Rairolaxy AI backend running on port ${PORT}`);
+  console.log(`🤖 AI provider: NVIDIA`);
+  console.log(`🧠 Model: ${AI_MODEL}`);
+  console.log(`🔑 NVIDIA API key: ${AI_API_KEY ? "configured" : "missing"}`);
 });
